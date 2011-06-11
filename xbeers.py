@@ -1,7 +1,7 @@
-#!/usr/bin/python -u
+#!/usr/bin/env python
 # coding: utf-8
 #
-# Copyright (c) 2011 Xavier Santolaria <xavier@santolaria.net> 
+# Copyright (c) 2011 Xavier Santolaria <xavier@santolaria.net>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -15,38 +15,32 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-import base64
 import codecs
 import datetime
 import getpass
-import hashlib
-import json
 import sys
-import urllib
-import urllib2
+import untappd
 
 from optparse import OptionParser
 
-reload(sys)
-sys.setdefaultencoding( "latin-1" )
 sys.stdout = codecs.getwriter("utf-8")(sys.stdout)
 
+MY_UNTAPPD_API_KEY = ""
 
-UNTAPPD_BASE_URL = "http://untappd.com"
-UNTAPPD_API_BASE_URL = "http://api.untappd.com/v3"
-UNTAPPD_KEY_ID = ""     # Change with your key
+UNTAPPD_PROTO = 'http://'
+UNTAPPD_URL = 'untappd.com'
+UNTAPPD_API_BASE_URL = 'api.untappd.com'
+UNTAPPD_API_VERSION="v3"
 UNTAPPD_DFLT_OFFSET = 25
 
-UNTAPPD_BASE_BEER_URL = UNTAPPD_BASE_URL + '/beer'
+UNTAPPD_BASE_BEER_URL = UNTAPPD_PROTO + UNTAPPD_URL + '/beer'
 
-UNTAPPD_USER_DISTINCT_METHOD = "user_distinct"
-UNTAPPD_BREWERY_INFO_METHOD = "brewery_info"
 
 TWITTER_BASE_URL = "https://twitter.com"
 
-now = datetime.datetime.now()
+now = datetime.datetime.utcnow()
 
- 
+
 def main():
     parser = OptionParser(usage="usage: %prog [options]", version="%prog 0.1")
     parser.add_option("-a", "--auth",
@@ -62,30 +56,20 @@ def main():
     if options.username is None:   # Username is required
         parser.error('Username not given')
 
-    if options.auth is not None:
-        pw = getpass.getpass()
-        if pw:
-            # MD5'ing password for Untappd auth. mechanism
-            cpw = hashlib.md5(pw).hexdigest()
+    user = options.username
+    passwd = None
 
-            pw_mgr = urllib2.HTTPPasswordMgrWithDefaultRealm()
-            pw_mgr.add_password(None, UNTAPPD_API_BASE_URL,
-                options.username, cpw)
-            auth_handler = urllib2.HTTPBasicAuthHandler(pw_mgr)
-            opener = urllib2.build_opener(auth_handler)
-            urllib2.install_opener(opener)
-        else:
+    if options.auth is not None:
+        passwd = getpass.getpass()
+        if not passwd:
             sys.exit("Error: no password entered.")
 
+    c = count = 0
 
-    c = None
-    count = 0
+    u = untappd.Api(MY_UNTAPPD_API_KEY, user, passwd)
 
-    url = url_build(UNTAPPD_USER_DISTINCT_METHOD)
-
-    l = get_user_beers(url, options.username)
-
-    slist = sortDictBy(l, 'country')    # Sort first by country
+    l = get_user_beers(u, user)
+    slist = sortDictBy(l, 'country')	# Sort first by country
 
     count = len(slist)
 
@@ -102,8 +86,7 @@ def main():
                 print ''
             print_html_country_header(sub['country'])
        
-        print_html_beer_item(sub['beer_id'], sub['beer'], sub['brewery'],
-            sub['twitter'])
+        print_html_beer_item(sub['beer_id'], sub['beer'], sub['twitter'])
 
         c = sub['country']
         i = i + 1
@@ -112,78 +95,54 @@ def main():
 
 ########## Functions ##########
 
-def url_build(method):
-    u = UNTAPPD_API_BASE_URL + '/' + method + '?key=' + UNTAPPD_KEY_ID
-    return u
-
-
 def sortDictBy(list, key):
     nlist = map(lambda x, key=key: (x[key], x), list)
     nlist.sort()
     return map(lambda (key, x): x, nlist)
 
 
-def get_user_beers(url, username):
+def get_user_beers(u, user):
     offset = 0
-    url_args = '&user=' + username + '&offset='
-
     bdata = []
 
     while True:
-        req = url + url_args + str(offset)
-        resp = urllib2.urlopen(req)
-
-        data = json.loads(resp.read())
+        data = u.get_user_distinct(**{'user': user, 'offset': offset})
 
         for result in data['results']:
-            if result['brewery_id']:
-                brdata = get_brewery_info(result['brewery_id'])
+            if result.get('brewery_id'):
+                brdata = get_brewery_info(u, result['brewery_id'])
 
-                this_beer = {'beer':result['beer_name'],
-                             'beer_id':result['beer_id'],
-                             'brewery':brdata[1],
-                             'twitter':brdata[3] or None}
-                this_beer['country'] = brdata[2]
+                this_beer = {
+                    'beer':result.get('beer_name'),
+                    'beer_id':result.get('beer_id'),
+                    'twitter':brdata[1] or None
+                }
+                this_beer['country'] = brdata[0]
 
                 bdata.append(this_beer)
 
-
-        if data['next_page']:
+        if data.get('next_page'):
             offset = offset + UNTAPPD_DFLT_OFFSET
         else:
             break 
 
     return bdata
 
-def get_brewery_info(id):
+
+def get_brewery_info(u, id):
     l = []
-    url = url_build(UNTAPPD_BREWERY_INFO_METHOD)
-    url_args = '&brewery_id=' + id
 
-    req = url + url_args
-    resp = urllib2.urlopen(req)
+    data = u.get_brewery_info(id)
 
-    data = json.loads(resp.read())
-
-    l.append(data['results']['brewery_id'])
-    l.append(data['results']['name'])
     l.append(data['results']['country'])
     l.append(data['results']['twitter_handle'])
 
     return l
 
 
-def print_html_beer_item(beer_id, beer, brewery, twitter_handle):
-    print ('<li><a href="' + UNTAPPD_BASE_BEER_URL + '/' + beer_id + '">'+
-        beer +'</a> ('),
-
-    if twitter_handle:
-        print ('<a href="' + TWITTER_BASE_URL + '/' + twitter_handle + '">'+
-            brewery +'</a>'),
-    else:
-        print brewery,
-
-    print ')</li>'
+def print_html_beer_item(beer_id, beer, twitter_handle):
+    print "<li><a href=\"%s%c%s\" target=\"_blank\">%s</a></li>" \
+        % (UNTAPPD_BASE_BEER_URL, '/', beer_id, beer)
 
 
 def print_html_countries_list(l):
@@ -210,7 +169,6 @@ def print_html_countries_list(l):
     print '</tr>'
     print '</table>'
     print ''
-
 
 
 def print_html_country_header(country):
@@ -468,6 +426,8 @@ def print_html_country_header(country):
 
 
     for k, v in countries.items():
+        if isinstance(country, unicode):
+            country = country.encode('utf-8') 
         if country == k:
             tld = v
 
@@ -516,9 +476,8 @@ def print_html_header(count):
     print '</p>'
     print ''
     print '<p>'
-    print 'Last count as of ' + str(now) + ': <b>'+ str(count) + '</b> beers.'
+    print 'Last count as of ' + str(now.strftime("%Y/%m/%d %H:%M %z")) + ': <b>'+ str(count) + '</b> beers.'
     print '</p>'
-
 
 
 def print_html_footer():
